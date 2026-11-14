@@ -121,7 +121,7 @@ node agents/run.mjs ./boat-claude '读取项目并开始任务'
 各家的做法和限制：
 
 - **Claude Code**：内置工具只保留 `Read`，并且只预先批准读它自己缓存 PDF 附件的目录。其余操作都走这个服务。
-- **Codex**：忽略用户配置，主机一侧用只读沙箱，只注入这个服务并预先批准它的工具。**当前版本关不掉 Codex 自带的本地执行工具**，这份配置靠提示词约束，不是强隔离。需要硬隔离时，请在主机上用单独的系统用户、容器或虚拟机运行它。
+- **Codex**：忽略用户配置，主机一侧始终保持只读沙箱和 `approval_policy=never`，只预先批准 hands 工具，不加入跳过审批或沙箱的参数。**当前版本关不掉 Codex 自带的本地执行工具**；用 `agents/run.mjs` 启动时，运行器逐行检查 `--json` 事件，一旦看到本地 `command_execution` 或 `file_change`，立即终止 Codex 及其子进程，报告事件和命令/文件，并以退出码 **2** 结束。hands 的 `mcp_tool_call` 正常转发，不因结果文本提到命令或补丁而误拦；事件流损坏时也会中止。这是收到事件后停止后续操作的检查：事件到达前命令可能已经执行，补丁可能已经写入，不能撤销改动；没有相应事件的本地行为也不在此检查范围。它不是强隔离，仍需保留只读沙箱；后续 macOS 主机应给 Codex 专用系统账号，仅提供它的登录和附属机器 SSH 密钥，长时间无人值守优先使用能去掉内置工具的 Claude Code。
 - **OpenCode**：已在 Windows 用官方独立 CLI **2.3.0** 验证。配置使用 V2 的 `mcp.servers.hands`，连接后登记全部 16 个 hands 工具；专用 `hands` agent 默认拒绝其他工具，实际权限检查中内置 read/edit/glob/grep/shell 均被拒绝，hands 工具被允许。启动使用独立的 `run --standalone`，传入 `--model` 时同时固定 CLI 模型，避免默认模型不可用时回退到其他模型。Windows 按[官方说明](https://opencode.ai/docs/)下载独立 CLI，放进当前用户 `PATH` 里的目录即可，无需管理员权限。
 
   本机测试可运行 `node agents/generate.mjs --agent opencode --local --root '<项目绝对路径>' --out ./boat-opencode`，然后 `node agents/run.mjs ./boat-opencode '<任务>'`。免登录模型目录可列出，但此次请求 `opencode/nemotron-3.5-super-vl-free` 被服务端以免费额度耗尽（429）拒绝，因此**尚未完成真实模型端到端验证**。继续使用前，请用户自己通过 `opencode auth login`（或交互界面 `/connect`）连接有额度的模型来源，再用 `opencode models` 确认模型 ID，并通过生成器 `--model provider/model` 明确选择；不需要把凭据交给 agent。测试用独立的 XDG 配置/数据/缓存目录，不修改用户的 OpenCode 全局配置或 Claude/Codex 配置。设置 `HANDS_TEST_OPENCODE_BIN` 为 OpenCode 可执行文件的路径后，`npm test` 会多跑一项接入测试（不调用模型）。
