@@ -10,7 +10,7 @@ import { desktopDirectory, validateDesktop } from './desktop.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 
-export function protectDirectory(directory) {
+function protectDirectory(directory) {
   fs.mkdirSync(directory, { recursive: true })
   for (let p = path.resolve(directory);; p = path.dirname(p)) {
     if (fs.lstatSync(p).isSymbolicLink()) throw new Error('Desktop credential directory must not traverse reparse points.')
@@ -21,7 +21,7 @@ export function protectDirectory(directory) {
   execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { windowsHide: true, stdio: 'pipe' })
 }
 
-export function startBackend(directory = desktopDirectory()) {
+function startBackend(directory) {
   const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-STA', '-File', path.join(here, 'desktop-windows.ps1'), '-CredentialDirectory', path.resolve(directory)], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
   const pending = new Map(); let id = 0; let stderr = ''
   child.stderr.on('data', c => { stderr = (stderr + c.toString()).slice(-4000) })
@@ -54,11 +54,15 @@ export function startBackend(directory = desktopDirectory()) {
   }
 }
 
-export async function startAgent({ directory = desktopDirectory(), backend, secure = protectDirectory } = {}) {
+export async function startAgent({ directory = desktopDirectory(), createBackend = startBackend, secure = protectDirectory } = {}) {
   secure(directory)
   const token = randomBytes(32).toString('hex')
   const endpointFile = path.join(directory, 'endpoint.json')
-  let server
+  let server, backend
+  const call = (name, args) => {
+    if (!backend || backend.child?.exitCode != null || backend.child?.signalCode != null || backend.child?.killed) backend = createBackend(directory)
+    return backend.call(name, args)
+  }
   let ownsEndpoint = false
   const cleanup = () => {
     backend?.child?.kill()
@@ -67,8 +71,7 @@ export async function startAgent({ directory = desktopDirectory(), backend, secu
     }
   }
   try {
-    backend ??= startBackend(directory)
-    const info = await backend.call('desktop_displays', {}) // fail before publishing an unusable agent
+    await call('desktop_displays', {}) // fail before publishing an unusable agent
     // The backend owns a per-user OS mutex, released even after crashes/reboots.
     ownsEndpoint = true
     fs.rmSync(endpointFile, { force: true })
@@ -93,7 +96,7 @@ export async function startAgent({ directory = desktopDirectory(), backend, secu
         if (busy) { reply(409, { error: 'Desktop agent is busy; no input was sent for this request.' }); return }
         busy = true
         try {
-          const result = await backend.call(name, args)
+          const result = await call(name, args)
           if (name === 'desktop_screenshot') {
             const { data, ...metadata } = result
             reply(200, { content: [{ type: 'text', text: JSON.stringify(metadata) }, { type: 'image', mimeType: 'image/png', data }] })
@@ -103,8 +106,8 @@ export async function startAgent({ directory = desktopDirectory(), backend, secu
     })
     server.requestTimeout = 5000; server.headersTimeout = 5000
     await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve) })
-    fs.writeFileSync(endpointFile, JSON.stringify({ port: server.address().port, token, pid: process.pid, sessionId: info.sessionId }), { mode: 0o600, flag: 'wx' })
-    return { server, info, close: async () => { server.closeAllConnections(); await new Promise(r => server.close(r)); cleanup() } }
+    fs.writeFileSync(endpointFile, JSON.stringify({ port: server.address().port, token, pid: process.pid }), { mode: 0o600, flag: 'wx' })
+    return { server, close: async () => { server.closeAllConnections(); await new Promise(r => server.close(r)); cleanup() } }
   } catch (e) { server?.close(); cleanup(); throw e }
 }
 
@@ -113,10 +116,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
   else {
     try {
       const agent = await startAgent()
-      console.error(`Hands desktop agent ready in session ${agent.info.sessionId}; credentials: ${path.join(desktopDirectory(), 'endpoint.json')}`)
+      console.error(`Hands desktop agent ready; credentials: ${path.join(desktopDirectory(), 'endpoint.json')}`)
       const stop = async () => { await agent.close(); process.exit(0) }
       process.once('SIGINT', stop); process.once('SIGTERM', stop)
-      process.once('exit', () => { agent.server.close() })
     } catch (e) { console.error(e.message); process.exitCode = 1 }
   }
 }

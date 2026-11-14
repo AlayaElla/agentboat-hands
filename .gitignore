@@ -1,4 +1,3 @@
 node_modules/
-# written by the tests and the Codex probe; they contain paths of the machine that ran them
+# Test evidence contains paths of the machine that ran it.
 evidence/
-codex-tools.json

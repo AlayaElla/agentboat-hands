@@ -3,7 +3,7 @@
 一个 MCP 工具服务：让在另一台机器上运行的 AI agent，操作这台机器上的文件、命令和桌面。
 
 - agent 和它的订阅登录留在主机上。项目所在的机器只运行这个服务，不登录任何模型账号，也不保存凭据。
-- 不绑定某一家 agent。支持 MCP 的 agent 都能接，已实测 Claude Code 和 Codex。
+- 不绑定某一家 agent。支持 MCP 的 agent 都能接。
 - 没有 npm 依赖，装了 Node 就能跑。
 
 ```
@@ -25,7 +25,7 @@
 node hands.mjs <根目录> [更多根目录...]
 ```
 
-它通过标准输入输出说 MCP 协议，通常由 agent 拉起，不需要手动运行。经 SSH 接入时，agent 一侧的 MCP 配置大致是：
+必须显式指定至少一个根目录。它通过标准输入输出说 MCP 协议，通常由 agent 拉起，不需要手动运行。经 SSH 接入时，agent 一侧的 MCP 配置大致是：
 
 ```json
 {
@@ -87,6 +87,7 @@ powershell.exe -NoProfile -File D:\tools\agentboat-hands\start-desktop.ps1 -Regi
 - 端口和令牌写在 `%LOCALAPPDATA%\AgentBoat\hands-desktop\endpoint.json`，目录只允许当前用户访问。
 - SSH 必须用同一个 Windows 用户登录。管理员和 SYSTEM 不在这个隔离范围内。
 - 机器未登录、锁屏、出现 UAC 提示时，桌面工具返回明确的错误，不会去碰安全桌面。
+- 桌面后台调用超时会停止后台，结果未知时不自动重发输入；下一次请求会启动新的后台。
 
 使用上的约定：
 
@@ -122,21 +123,19 @@ node agents/run.mjs ./boat-claude '读取项目并开始任务'
 
 - **Claude Code**：内置工具只保留 `Read`，并且只预先批准读它自己缓存 PDF 附件的目录。其余操作都走这个服务。
 - **Codex**：忽略用户配置，主机一侧始终保持只读沙箱和 `approval_policy=never`，只预先批准 hands 工具，不加入跳过审批或沙箱的参数。**当前版本关不掉 Codex 自带的本地执行工具**；用 `agents/run.mjs` 启动时，运行器逐行检查 `--json` 事件，一旦看到本地 `command_execution` 或 `file_change`，立即终止 Codex 及其子进程，报告事件和命令/文件，并以退出码 **2** 结束。hands 的 `mcp_tool_call` 正常转发，不因结果文本提到命令或补丁而误拦；事件流损坏时也会中止。这是收到事件后停止后续操作的检查：事件到达前命令可能已经执行，补丁可能已经写入，不能撤销改动；没有相应事件的本地行为也不在此检查范围。它不是强隔离，仍需保留只读沙箱；后续 macOS 主机应给 Codex 专用系统账号，仅提供它的登录和附属机器 SSH 密钥，长时间无人值守优先使用能去掉内置工具的 Claude Code。
-- **OpenCode**：已在 Windows 用官方独立 CLI **2.3.0** 验证。配置使用 V2 的 `mcp.servers.hands`，连接后登记全部 16 个 hands 工具；专用 `hands` agent 默认拒绝其他工具，实际权限检查中内置 read/edit/glob/grep/shell 均被拒绝，hands 工具被允许。启动使用独立的 `run --standalone`，传入 `--model` 时同时固定 CLI 模型，避免默认模型不可用时回退到其他模型。Windows 按[官方说明](https://opencode.ai/docs/)下载独立 CLI，放进当前用户 `PATH` 里的目录即可，无需管理员权限。
+- **OpenCode**：配置使用 V2 的 `mcp.servers.hands`；专用 `hands` agent 默认拒绝其他工具，只允许 hands 工具。启动使用独立的 `run --standalone`，传入 `--model` 时同时固定 CLI 模型。Windows 使用[官方独立 CLI](https://opencode.ai/docs/)，放进当前用户 `PATH` 里的目录。
 
-  本机测试可运行 `node agents/generate.mjs --agent opencode --local --root '<项目绝对路径>' --out ./boat-opencode`，然后 `node agents/run.mjs ./boat-opencode '<任务>'`。免登录模型目录可列出，但此次请求 `opencode/nemotron-3.5-super-vl-free` 被服务端以免费额度耗尽（429）拒绝，因此**尚未完成真实模型端到端验证**。继续使用前，请用户自己通过 `opencode auth login`（或交互界面 `/connect`）连接有额度的模型来源，再用 `opencode models` 确认模型 ID，并通过生成器 `--model provider/model` 明确选择；不需要把凭据交给 agent。测试用独立的 XDG 配置/数据/缓存目录，不修改用户的 OpenCode 全局配置或 Claude/Codex 配置。设置 `HANDS_TEST_OPENCODE_BIN` 为 OpenCode 可执行文件的路径后，`npm test` 会多跑一项接入测试（不调用模型）。
+  模型来源由用户通过 `opencode auth login` 或交互界面 `/connect` 连接，用 `opencode models` 确认模型 ID，再通过生成器的 `--model provider/model` 选择。设置 `HANDS_TEST_OPENCODE_BIN` 为已有可执行文件的路径可开启接入测试：使用独立的 XDG 配置、数据、缓存目录，不调用模型。
 
 ## 项目 skill 快照
 
 项目约定以 `.agents/skills/<name>` 为编辑源，`.agentboat/skill-proposals` 为未发布草稿。项目主 agent 用 AgentBoat 的 `workspace/project-skills.mjs publish` 审核发布，生成 Claude 副本和 `.agentboat/skill-reviews.json` 全目录摘要，再按项目约定提交、合并。后续 agent 的工作树必须从已合并基线创建；已有工作树需先更新。各家本机发现位置依据：[Codex](https://learn.chatgpt.com/docs/build-skills) `.agents/skills`、[Claude Code](https://code.claude.com/docs/en/skills) `.claude/skills`、[OpenCode](https://opencode.ai/docs/skills/) 原生 `.opencode/skills` 并兼容前两者。
 
-生成器现在会在生成配置前读取指定 `--root` 的 Git HEAD，经 SSH 时使用同一连接的非交互、严格主机密钥校验选项。它只取该提交中 `.agents/skills` 的普通文件，并核对审核记录的 SHA-256；没有 skill 时仍可启动，有未审核的 skill、非法路径、链接或连接失败时报错。草稿、工作区未提交变化和其他分支都不会传播。项目根须为工作树根；未进入 Git 的 skill 须先按项目流程提交。快照上限 2 MiB、256 个文件，超限明确报错。
+生成器在生成配置前读取指定 `--root` 的 Git HEAD，经 SSH 时使用同一连接的非交互、严格主机密钥校验选项。它只取该提交中 `.agents/skills` 的普通文件，并核对审核记录的 SHA-256；没有 skill 时仍可启动，有未审核的 skill、非法路径、链接或连接失败时报错。草稿、工作区未提交变化和其他分支都不会传播。项目根须为工作树根；未进入 Git 的 skill 须先按项目流程提交。快照上限 2 MiB、256 个文件，超限明确报错。
 
-主机每份 `--out` 独立保存 `.agents/skills`、`.claude/skills` 的字节副本、`project-skills.json` 提交号和名称，以及 `project-skills.md` 正文。它不改全局目录，不需要链接或管理员权限。附属机器模式保留原有内置工具限制：Claude/Codex 的启动器用 stdin 把审核后的正文随任务载入，OpenCode 用配置的 instructions 载入，**不开放原生 skill/read/shell 权限来加载缓存**。因此远程模式是启动时加载已审核正文，而非依赖 agent 自己发现远端目录。所有资源和脚本都按正文标明的源路径通过 hands 读/执行，主机快照只用于加载指令。
+主机每份 `--out` 独立保存 `project-skills.json` 提交号和名称，以及 `project-skills.md` 正文。Claude/Codex 的启动器用 stdin 把审核后的正文随任务载入，OpenCode 用配置的 instructions 载入。所有资源和脚本都按正文标明的源路径通过 hands 读/执行。
 
-仍使用原来的 generate/run 命令，无需新参数。每个 agent 对应一个自己的远程工作树和新配置目录；合并新 skill、切换分支或撤销 skill 后，重新 generate 并启动 agent。旧配置是固定快照，不会自动更新，也不应在生成失败后当作最新配置继续使用。审核记录是项目流程记录，不是签名认证；仓库写权限和主 agent 审核仍是信任边界。skill 内容不能扩大任务范围或权限。
-
-`node --test agents/generate.test.mjs agents/project-skills.test.mjs agents/run.test.mjs` 检查审核摘要、HEAD 隔离、中文和引号路径经远端 PowerShell 编码取回、三家加载配置及启动器 stdin；这不等于已经跨两台机器联调。OpenCode 可继续用现有接入测试检查配置，调用模型需要用户有可用额度。
+每个 agent 对应一个自己的远程工作树和新配置目录；合并新 skill、切换分支或撤销 skill 后，重新 generate 并启动 agent。旧配置是固定快照，不会自动更新。审核记录是项目流程记录，不是签名认证；仓库写权限和主 agent 审核是信任边界。skill 内容不能扩大任务范围或权限。
 
 ## PDF
 
@@ -167,12 +166,18 @@ node D:/tools/agentboat-hands/worktree.mjs remove --repo D:/projects/demo --path
 npm test
 ```
 
-默认的测试不会把窗口切到前台，也不会发送键鼠输入，只会打开一个自己的小窗口截图后关闭。两类测试需要显式开启：
+Windows 上默认测试会启动真实桌面 agent，截取全屏、显示器和区域（像素只在内存中检查，不保存），还会打开自己的小窗口并保存其截图后关闭。默认不切换前台窗口，不发送成功的键鼠输入。要完全跳过真实桌面和登录任务测试，使用：
+
+```sh
+node --test --test-skip-pattern="Windows real broker|interactive logon task"
+```
+
+两类测试需要显式开启：
 
 - `HANDS_TEST_INPUT=1`：先用 `desktop_focus` 聚焦测试自己打开的窗口，再做一次点击和一次中文输入，核对点击计数和完整文字，保存前后窗口截图。每步仍检查精确窗口和前台状态，失焦立即中止。期间请不要动键盘鼠标。
 - `HANDS_TEST_LOGON=1`：注册一个临时的登录任务，验证代理能在登录会话里启动，结束后移除。
 
-2026-11-13 在一台 Windows 11 单屏机器上实测通过：后台代理把测试窗口切到前台，点击一次、输入 `AgentBoat 中文🛶`，点击计数从 0 变为 1，窗口文字与预期一致。测试的前后截图和记录写在 `evidence/` 下，不进 git。
+桌面测试的窗口截图和记录默认写在 `evidence/` 下，可用 `HANDS_EVIDENCE_DIR` 指定其他目录。
 
 `agents/verify-live.mjs` 会用真实的 Claude Code 或 Codex 跑一遍端到端检查，会消耗订阅额度。
 
@@ -182,5 +187,5 @@ npm test
 - 右键、双击、拖拽、滚轮及组合键的实机送达。基础点击和含中文文字输入已验证。
 - 多显示器和不同缩放比例混用。
 - 配置生成器在 macOS 上的运行。
-- OpenCode 的真实模型端到端操作：CLI、MCP 连接及本地工具权限已验证，模型请求受免费额度限制；见上文 OpenCode 段落。
+- OpenCode 的真实模型端到端操作。
 - macOS 和 Linux 上的桌面控制还没有实现。

@@ -17,7 +17,11 @@ const win = process.platform === 'win32'
 const real = p => fs.realpathSync.native(p)
 const fold = p => (win ? p.toLowerCase() : p)
 const rootArgs = process.argv.slice(2)
-const roots = (rootArgs.length ? rootArgs : [process.cwd()]).map(r => real(path.resolve(r)))
+if (!rootArgs.length) {
+  console.error('Usage: node hands.mjs <root-folder> [more-root-folders...]')
+  process.exit(1)
+}
+const roots = rootArgs.map(r => real(path.resolve(r)))
 
 const MAX_CHARS = 40000 // one text result; larger ones get dumped to a file by the calling agent
 const MAX_TEXT_BYTES = 20_000_000
@@ -30,7 +34,7 @@ const SKIP_DIRS = new Set(['.git', 'node_modules'])
 function inRoots(p) {
   const abs = path.resolve(roots[0], String(p))
   let probe = abs // resolve links on the deepest existing ancestor, so a link cannot lead outside the roots
-  while (!fs.existsSync(probe) && path.dirname(probe) !== probe) probe = path.dirname(probe)
+  while (!fs.lstatSync(probe, { throwIfNoEntry: false }) && path.dirname(probe) !== probe) probe = path.dirname(probe)
   const full = path.join(real(probe), path.relative(probe, abs))
   const inside = roots.some(r => fold(full) === fold(r) || fold(full).startsWith(fold(r.endsWith(path.sep) ? r : r + path.sep)))
   if (!inside) throw new Error(`Outside the allowed folders: ${abs}. Allowed: ${roots.join(', ')}`)
@@ -48,19 +52,22 @@ function* walk(dir, skip = SKIP_DIRS) {
 
 function globToRegExp(glob) {
   const lit = s => s.replace(/[.+^$()|[\]\\]/g, '\\$&')
-  let re = ''
-  for (let i = 0; i < glob.length; i++) {
-    const c = glob[i]
-    const close = c === '{' ? glob.indexOf('}', i) : -1
-    if (c === '*' && glob[i + 1] === '*') {
-      const slash = glob[i + 2] === '/'
-      re += slash ? '(?:.*/)?' : '.*'
-      i += slash ? 2 : 1
-    } else if (c === '*') re += '[^/]*'
-    else if (c === '?') re += '[^/]'
-    else if (close > i) { re += '(?:' + glob.slice(i + 1, close).split(',').map(lit).join('|') + ')'; i = close } else re += lit(c)
+  const fragment = glob => {
+    let re = ''
+    for (let i = 0; i < glob.length; i++) {
+      const c = glob[i]
+      const close = c === '{' ? glob.indexOf('}', i) : -1
+      if (c === '*' && glob[i + 1] === '*') {
+        const slash = glob[i + 2] === '/'
+        re += slash ? '(?:.*/)?' : '.*'
+        i += slash ? 2 : 1
+      } else if (c === '*') re += '[^/]*'
+      else if (c === '?') re += '[^/]'
+      else if (close > i) { re += '(?:' + glob.slice(i + 1, close).split(',').map(fragment).join('|') + ')'; i = close } else re += lit(c)
+    }
+    return re
   }
-  return new RegExp('^' + re + '$', win ? 'i' : '')
+  return new RegExp('^' + fragment(glob) + '$', win ? 'i' : '')
 }
 
 const slashed = (base, file) => path.relative(base, file).split(path.sep).join('/')
@@ -277,9 +284,12 @@ function killTree(pid, sync = false) {
 }
 
 function runCommand({ command, cwd, timeout_ms, shell, background }) {
+  const directory = cwd ? inRoots(cwd) : roots[0]
+  if (!fs.existsSync(directory)) throw new Error(`Working directory does not exist: ${directory}`)
+  if (!fs.statSync(directory).isDirectory()) throw new Error(`Working directory is not a folder: ${directory}`)
   const { file, args, verbatim } = shellCommand(String(command), shell)
   const child = spawn(file, args, {
-    cwd: cwd ? inRoots(cwd) : roots[0],
+    cwd: directory,
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsVerbatimArguments: !!verbatim,
     windowsHide: true,
@@ -303,22 +313,32 @@ function runCommand({ command, cwd, timeout_ms, shell, background }) {
   }
 
   return new Promise((resolve, reject) => {
-    const out = []
-    const err = []
+    const out = { chunks: [], size: 0, truncated: false }
+    const err = { chunks: [], size: 0, truncated: false }
+    const maxBytes = 2 * 1024 * 1024
+    const keep = (stream, chunk) => {
+      const remaining = maxBytes - stream.size
+      if (chunk.length > remaining) stream.truncated = true
+      if (remaining > 0) {
+        const kept = Buffer.from(chunk.subarray(0, remaining))
+        stream.chunks.push(kept)
+        stream.size += kept.length
+      }
+    }
     let timedOut = false
     const limit = Math.min(Number(timeout_ms) || 120000, 600000)
     const timer = setTimeout(() => { timedOut = true; killTree(child.pid) }, limit)
     foreground.add(child)
-    child.stdout.on('data', c => out.push(c))
-    child.stderr.on('data', c => err.push(c))
+    child.stdout.on('data', c => keep(out, c))
+    child.stderr.on('data', c => keep(err, c))
     child.on('error', e => { clearTimeout(timer); foreground.delete(child); reject(new Error(`Could not start the command: ${e.message}`)) })
     child.on('close', code => {
       clearTimeout(timer)
       foreground.delete(child)
-      const stdout = decodeOutput(Buffer.concat(out)).trimEnd()
-      const stderr = decodeOutput(Buffer.concat(err)).trimEnd()
+      const stdout = decodeOutput(Buffer.concat(out.chunks)).trimEnd()
+      const stderr = decodeOutput(Buffer.concat(err.chunks)).trimEnd()
       const head = timedOut ? `timed out after ${limit} ms and was stopped` : `exit code: ${code}`
-      const text = clip([head, stdout, stderr && `[stderr]\n${stderr}`].filter(Boolean).join('\n'))
+      const text = clip([head, ...[['stdout', out], ['stderr', err]].filter(([, stream]) => stream.truncated).map(([name]) => `[${name} truncated at ${maxBytes} bytes]`), stdout, stderr && `[stderr]\n${stderr}`].filter(Boolean).join('\n'))
       resolve({ content: [{ type: 'text', text }], isError: timedOut || code !== 0 })
     })
   })
@@ -448,7 +468,7 @@ lines.on('close', () => process.exit(0))
 lines.on('line', async line => {
   let msg
   try { msg = JSON.parse(line) } catch { return }
-  if (msg.id === undefined) return // notifications get no reply
+  if (msg?.id === undefined) return // notifications get no reply
   const reply = body => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, ...body }) + '\n')
   if (msg.method === 'initialize') {
     reply({ result: {

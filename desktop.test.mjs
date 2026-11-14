@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import { callDesktop, desktopTools, validateDesktop } from './desktop.mjs'
 import { startAgent } from './desktop-agent.mjs'
+import { client as mcpClient } from './agents/mcp-client.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const win = process.platform === 'win32'
@@ -18,23 +19,6 @@ async function until(fn, ms = 10000) {
   const end = Date.now() + ms
   do { try { const value = await fn(); if (value) return value } catch {} await delay(100) } while (Date.now() < end)
   throw new Error('Timed out waiting for the test fixture.')
-}
-function mcp(directory) {
-  const child = spawn(process.execPath, [path.join(here, 'hands.mjs'), here], { env: { ...process.env, HANDS_DESKTOP_DIR: directory }, stdio: ['pipe', 'pipe', 'inherit'] })
-  let id = 0, buffer = ''; const pending = new Map()
-  child.stdout.on('data', c => {
-    buffer += c
-    for (let n; (n = buffer.indexOf('\n')) >= 0;) {
-      const msg = JSON.parse(buffer.slice(0, n)); buffer = buffer.slice(n + 1)
-      pending.get(msg.id)?.(msg.result); pending.delete(msg.id)
-    }
-  })
-  return { child, call: (name, args = {}) => new Promise((resolve, reject) => {
-    const current = ++id
-    const timer = setTimeout(() => { pending.delete(current); reject(new Error('MCP call timed out; not retrying.')) }, 25000)
-    pending.set(current, r => { clearTimeout(timer); resolve(r) })
-    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: current, method: 'tools/call', params: { name, arguments: args } }) + '\n')
-  }) }
 }
 const text = r => r.content?.filter(c => c.type === 'text').map(c => c.text).join('')
 const value = r => { assert.equal(r.isError, undefined, text(r)); return JSON.parse(text(r)) }
@@ -88,7 +72,7 @@ test('loopback agent authenticates, validates, serializes and returns MCP images
     if (name === 'desktop_screenshot') return { data: 'YWJj', bounds: { x: -100, y: 0, width: 100, height: 50 }, imageWidth: 50, imageHeight: 25, scaleX: 0.5, scaleY: 0.5 }
     return { sessionId: 7, ok: true }
   } }
-  const agent = await startAgent({ directory, backend, secure: () => {} })
+  const agent = await startAgent({ directory, createBackend: () => backend, secure: () => {} })
   try {
     const endpoint = JSON.parse(fs.readFileSync(path.join(directory, 'endpoint.json')))
     assert.equal(agent.server.address().address, '127.0.0.1')
@@ -110,6 +94,40 @@ test('loopback agent authenticates, validates, serializes and returns MCP images
   } finally { release?.(); await agent.close(); fs.rmSync(directory, { recursive: true, force: true }) }
 })
 
+test('desktop agent starts a fresh fake backend after timeout or exit without replaying input', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hands-agent-restart-'))
+  const backends = [], calls = []
+  const createBackend = () => {
+    const child = { exitCode: null, signalCode: null, killed: false, kill() { this.killed = true } }
+    const backend = { child, async call(name) {
+      calls.push(name)
+      if (name === 'desktop_type') {
+        child.kill()
+        throw new Error('Desktop backend timed out and was stopped. Input outcome is unknown; do not retry automatically.')
+      }
+      return { ok: true }
+    } }
+    backends.push(backend)
+    return backend
+  }
+  const agent = await startAgent({ directory, createBackend, secure: () => {} })
+  try {
+    await assert.rejects(callDesktop('desktop_type', { window_id: '123', text: 'fake input' }, { platform: 'win32', directory }), /timed out.*unknown/)
+    assert.equal(backends.length, 1)
+    assert.equal(value(await callDesktop('desktop_windows', {}, { platform: 'win32', directory })).ok, true)
+    assert.equal(backends.length, 2)
+    assert.equal(calls.filter(name => name === 'desktop_type').length, 1)
+    backends[1].child.signalCode = 'SIGTERM'
+    await callDesktop('desktop_displays', {}, { platform: 'win32', directory })
+    assert.equal(backends.length, 3)
+    backends[2].child.exitCode = 1
+    await callDesktop('desktop_windows', {}, { platform: 'win32', directory })
+    assert.equal(backends.length, 4)
+    assert.equal('sessionId' in JSON.parse(fs.readFileSync(path.join(directory, 'endpoint.json'))), false)
+  } finally { await agent.close(); fs.rmSync(directory, { recursive: true, force: true }) }
+  assert.equal(backends.at(-1).child.killed, true)
+})
+
 test('Windows real broker, own-window capture and opt-in guarded input', { skip: !win, timeout: 60000 }, async t => {
   fs.mkdirSync(evidence, { recursive: true })
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hands-desktop-test-'))
@@ -122,7 +140,7 @@ test('Windows real broker, own-window capture and opt-in guarded input', { skip:
     // The directory DACL is protected and allows this SID only, without inherited access.
     const acl = JSON.parse(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `$a=Get-Acl -LiteralPath '${directory.replaceAll("'", "''")}'; @{ protected=$a.AreAccessRulesProtected; count=@($a.Access).Count; owner=$a.Owner; identity=$a.Access[0].IdentityReference.Value; current=[Security.Principal.WindowsIdentity]::GetCurrent().Name } | ConvertTo-Json -Compress`], { windowsHide: true, encoding: 'utf8' }))
     assert.equal(acl.protected, true); assert.equal(acl.count, 1); assert.equal(acl.identity, acl.current)
-    client = mcp(directory)
+    client = mcpClient({ command: process.execPath, args: [path.join(here, 'hands.mjs'), here], env: { HANDS_DESKTOP_DIR: directory } })
     const displays = value(await client.call('desktop_displays'))
     assert.ok(displays.sessionId > 0); assert.ok(displays.monitors.length)
     // Inspect ONLY metadata and PNG header, never emit or view desktop/monitor/region pixels.
@@ -190,8 +208,7 @@ test('Windows real broker, own-window capture and opt-in guarded input', { skip:
       fs.writeFileSync(stateFile + '.stop', '')
       await until(() => fixture.exitCode !== null).catch(() => fixture.kill())
     }
-    client?.child.stdin.end()
-    if (client) await until(() => client.child.exitCode !== null).catch(() => client.child.kill())
+    await client?.close()
     await agent?.close()
     fs.rmSync(directory, { recursive: true, force: true })
   }

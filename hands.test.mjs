@@ -1,12 +1,13 @@
 // Drives the real server over stdio, the way an agent would. Run with: npm test
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { after, before, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { pdfFixture } from './agents/fixtures.mjs'
+import { client } from './agents/mcp-client.mjs'
 
 const server = path.join(path.dirname(fileURLToPath(import.meta.url)), 'hands.mjs')
 const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'hands-root-')))
@@ -33,23 +34,7 @@ fs.writeFileSync(f('node_modules', 'pkg', 'index.js'), 'const needle = 2\n')
 fs.writeFileSync(path.join(outside, 'secret.txt'), 'secret\n')
 fs.symlinkSync(outside, f('link'), 'junction') // a link inside the root that points out of it
 
-let child
-let buffer = ''
-let nextId = 0
-const pending = new Map()
-
-function rpc(method, params) {
-  return new Promise(resolve => {
-    const id = ++nextId
-    pending.set(id, resolve)
-    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n')
-  })
-}
-
-async function call(name, args = {}) {
-  const { result } = await rpc('tools/call', { name, arguments: args })
-  return { ...result, text: result.content.map(c => c.text ?? '').join('') }
-}
+let child, rpc, call, close
 
 const node = code => `node -e "${code}"`
 const alive = pid => { try { process.kill(pid, 0); return true } catch { return false } }
@@ -62,25 +47,28 @@ async function until(check, ms = 15000) {
 }
 
 before(async () => {
-  child = spawn(process.execPath, [server, root], { stdio: ['pipe', 'pipe', 'inherit'] })
-  child.stdout.on('data', data => {
-    buffer += data
-    for (let n; (n = buffer.indexOf('\n')) >= 0;) {
-      const msg = JSON.parse(buffer.slice(0, n))
-      buffer = buffer.slice(n + 1)
-      pending.get(msg.id)?.(msg)
-      pending.delete(msg.id)
-    }
-  })
+  ({ child, rpc, call, close } = client({ command: process.execPath, args: [server, root] }))
   const { result } = await rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '0' } })
   assert.equal(result.protocolVersion, '2025-06-18')
 })
 
-after(() => {
-  child.kill()
+after(async () => {
+  await close()
   try { fs.rmdirSync(f('link')) } catch { /* not a junction on this platform */ }
   fs.rmSync(root, { recursive: true, force: true })
   fs.rmSync(outside, { recursive: true, force: true })
+})
+
+test('requires an explicit root instead of exposing the working directory', () => {
+  const result = spawnSync(process.execPath, [server], { cwd: root, encoding: 'utf8', windowsHide: true })
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /Usage: node hands.mjs <root-folder>/)
+  assert.equal(result.stdout, '')
+})
+
+test('null and malformed input do not break subsequent MCP requests', async () => {
+  child.stdin.write('null\n{bad json\n')
+  assert.deepEqual((await rpc('ping')).result, {})
 })
 
 test('offers the original nine tools and seven desktop tools', async () => {
@@ -144,6 +132,26 @@ test('stays inside its root folder', async () => {
   assert.match((await call('run_command', { command: 'echo hi', cwd: outside })).text, /Outside the allowed folders/)
 })
 
+test('write_file refuses a dangling file symlink to outside the root', async t => {
+  const target = path.join(outside, 'dangling-target.txt')
+  try { fs.symlinkSync(target, f('dangling-file'), 'file') } catch (error) {
+    if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) { t.skip(`File symlinks unavailable (${error.code}); requires Windows Developer Mode or symlink privilege.`); return }
+    throw error
+  }
+  const result = await call('write_file', { path: 'dangling-file', content: 'must not escape' })
+  assert.equal(result.isError, true)
+  assert.equal(fs.existsSync(target), false)
+  assert.ok(fs.lstatSync(f('dangling-file')).isSymbolicLink())
+})
+
+test('write_file refuses a path below a dangling directory link', async () => {
+  const target = path.join(outside, 'missing-directory')
+  fs.symlinkSync(target, f('dangling-directory'), process.platform === 'win32' ? 'junction' : 'dir')
+  const result = await call('write_file', { path: 'dangling-directory/new.txt', content: 'must not escape' })
+  assert.equal(result.isError, true)
+  assert.equal(fs.existsSync(target), false)
+})
+
 test('refuses to change a file it has not read, or one that changed since', async () => {
   fs.writeFileSync(f('guard.txt'), 'one\n')
   assert.match((await call('write_file', { path: 'guard.txt', content: 'two\n' })).text, /Read this file/)
@@ -190,6 +198,14 @@ test('finds files and searches content, GBK included', async () => {
   assert.match((await call('list_directory')).text, /^sub\/$/m)
 })
 
+test('brace globs compile each wildcard alternative for find and search', async () => {
+  for (const name of ['alpha.test.mjs', 'beta.spec.mjs', 'gamma.mjs', 'literal[1].test.mjs']) fs.writeFileSync(f(name), 'brace needle\n')
+  const expected = ['alpha.test.mjs', 'beta.spec.mjs', 'literal[1].test.mjs']
+  assert.deepEqual((await call('find_files', { pattern: '{*.test.mjs,*.spec.mjs}' })).text.split('\n').sort(), expected)
+  assert.deepEqual((await call('search_content', { pattern: 'brace needle', glob: '{*.test.mjs,*.spec.mjs}', files_only: true })).text.split('\n').sort(), expected)
+  assert.equal((await call('find_files', { pattern: '{literal[1].test.mjs,missing?.mjs}' })).text, 'literal[1].test.mjs')
+})
+
 test('runs commands: exit code, stderr, Chinese and GBK output, working folder, timeout', async () => {
   const failed = await call('run_command', { command: node("console.log('out'); console.error('err'); process.exit(3)") })
   assert.equal(failed.isError, true)
@@ -200,6 +216,27 @@ test('runs commands: exit code, stderr, Chinese and GBK output, working folder, 
   const started = Date.now()
   assert.match((await call('run_command', { command: node('setTimeout(()=>{},30000)'), timeout_ms: 500 })).text, /timed out/)
   assert.ok(Date.now() - started < 10000, 'a timed-out command is stopped, not waited for')
+})
+
+test('reports missing or non-directory command working folders before spawning a shell', async () => {
+  for (const background of [false, true]) {
+    const missing = await call('run_command', { command: 'echo must-not-run', cwd: 'missing-cwd', background })
+    assert.equal(missing.isError, true)
+    assert.match(missing.text, /Working directory does not exist/)
+    const file = await call('run_command', { command: 'echo must-not-run', cwd: 'utf8.txt', background })
+    assert.equal(file.isError, true)
+    assert.match(file.text, /Working directory is not a folder/)
+  }
+})
+
+test('caps stdout and stderr separately while draining large command output', async () => {
+  const result = await call('run_command', { command: node("process.stdout.write('x'.repeat(3*1024*1024)+'STDOUT_END'); process.stderr.write('y'.repeat(3*1024*1024)+'STDERR_END')") })
+  assert.equal(result.isError, false)
+  assert.match(result.text, /stdout truncated at 2097152 bytes/)
+  assert.match(result.text, /stderr truncated at 2097152 bytes/)
+  assert.doesNotMatch(result.text, /STDOUT_END|STDERR_END/)
+  assert.ok(result.text.length < 31000)
+  assert.deepEqual((await rpc('ping')).result, {})
 })
 
 test('can use cmd on Windows', { skip: process.platform !== 'win32' }, async () => {

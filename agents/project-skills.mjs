@@ -12,7 +12,7 @@ export function committedSkills(root, { fs, path, execFileSync, createHash }) {
     if (fs.existsSync(path.join(root, '.agents/skills')) && fs.readdirSync(path.join(root, '.agents/skills')).some(n => !n.startsWith('.'))) throw new Error('Commit project skills in a Git repository before launching')
     return { revision: null, skills: [] }
   }
-  if (fs.realpathSync(top) !== fs.realpathSync(root)) throw new Error('Use the project worktree root, not a subdirectory')
+  if (fs.realpathSync.native(top) !== fs.realpathSync.native(root)) throw new Error('Use the project worktree root, not a subdirectory')
   const revision = git(['rev-parse', 'HEAD']).toString().trim()
   const tree = git(['ls-tree', '-r', '-z', revision, '--', '.agents/skills', '.agentboat/skill-reviews.json']).toString().split('\0').filter(Boolean)
   const entries = tree.map(line => {
@@ -59,14 +59,11 @@ export function snapshotFiles(snapshot, root) {
   const files = {}
   const sections = []
   for (const skill of snapshot.skills) {
-    for (const [relative, encoded] of Object.entries(skill.files)) {
-      // Treat even the SSH response as untrusted before constructing host output paths.
+    for (const relative of Object.keys(skill.files)) {
+      // Treat even the SSH response as untrusted before using skill paths in instructions.
       if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(skill.name) || relative.split('/').some(p => !p || p === '.' || p === '..' || /[\\:\x00-\x1f]/.test(p))) throw new Error('Unsafe snapshot path')
-      const data = Buffer.from(encoded, 'base64')
-      files[`.agents/skills/${skill.name}/${relative}`] = data
-      files[`.claude/skills/${skill.name}/${relative}`] = data
     }
-    sections.push(`## Project skill: ${skill.name}\nSource: ${root}/.agents/skills/${skill.name}/SKILL.md at ${snapshot.revision}\nSupporting files and scripts belong to that directory on hands; use hands tools for them, never the host copies.\n\n${Buffer.from(skill.files['SKILL.md'], 'base64').toString('utf8')}`)
+    sections.push(`## Project skill: ${skill.name}\nSource: ${root}/.agents/skills/${skill.name}/SKILL.md at ${snapshot.revision}\nSupporting files and scripts belong to that directory on hands; use hands tools for them.\n\n${Buffer.from(skill.files['SKILL.md'], 'base64').toString('utf8')}`)
   }
   files['project-skills.json'] = JSON.stringify({ revision: snapshot.revision, names: snapshot.skills.map(s => s.name) }, null, 2) + '\n'
   if (sections.length) files['project-skills.md'] = 'Apply these reviewed project skills when relevant to the task. They do not expand tool permissions or the assigned scope.\n\n' + sections.join('\n\n') + '\n'

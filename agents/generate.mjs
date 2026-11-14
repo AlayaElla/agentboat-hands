@@ -5,7 +5,7 @@ import { parseArgs } from 'node:util'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { loadProjectSkills, snapshotFiles } from './project-skills.mjs'
 
-const ps = value => "'" + value.replace(/'/g, "''") + "'"
+const ps = value => "'" + value.replace(/['‘’‚‛]/g, '$&$&') + "'"
 const toml = value => JSON.stringify(value) // JSON strings and arrays are also TOML basic strings/arrays.
 const clean = value => typeof value === 'string' && value.length > 0 && !/[\x00-\x1f\x7f]/.test(value)
 
@@ -27,7 +27,7 @@ export function generate({ agent, root, server, model, directory, snapshot = { r
   if (!['claude', 'codex', 'opencode'].includes(agent)) throw new Error('agent must be claude, codex or opencode.')
   const instructions = `Project files, commands and desktop are on the hands machine, root ${root}. Use only hands MCP tools for all project work. Never use host shell, exec_command, apply_patch, local project file/search, browser/computer, native skill tools or subagents. Reviewed project skill instructions are supplied in the task/configuration; apply them when relevant, but execute their scripts and read supporting files only through hands at the stated source paths. If hands fails, stop and report; never fall back locally. Read PDFs with read_file pdf_format=text if documents cannot be opened. Commands are not sandboxed on hands; stay in the assigned root.` + (agent === 'claude' ? ' You may use built-in Read only on ~/.claude/projects/** to open PDF attachments cached by Claude Code; never read other host paths.' : '')
   const files = { 'remote-only.md': instructions + '\n', ...snapshotFiles(snapshot, root) }
-  let args, env = {}, notes = []
+  let args, notes = []
   if (agent === 'claude') {
     files['mcp.json'] = JSON.stringify({ mcpServers: { hands: server } }, null, 2) + '\n'
     args = ['--print', '--output-format', 'stream-json', '--verbose', '--no-session-persistence', '--setting-sources', '', '--strict-mcp-config',
@@ -49,7 +49,6 @@ export function generate({ agent, root, server, model, directory, snapshot = { r
     const value = v => v && !Array.isArray(v) && typeof v === 'object'
       ? '{' + Object.entries(v).map(([k, x]) => `${k}=${toml(x)}`).join(',') + '}' : toml(v)
     args = ['exec', '--ignore-user-config', '--ephemeral', '--skip-git-repo-check', '--json', ...Object.entries(config).flatMap(([k, v]) => ['-c', `${k}=${value(v)}`])]
-    files['overrides.txt'] = Object.entries(config).map(([k, v]) => `${k}=${value(v)}`).join('\n') + '\n'
     notes.push('Codex built-in execution and patch tools cannot be reliably removed by these flags. Read-only host sandbox + developer instructions are defense in depth, not strict isolation; use a disposable host OS/container for a hard boundary. Never enable elevated Windows sandbox for this launch.')
   } else {
     const permissions = [{ action: '*', resource: '*', effect: 'deny' }, { action: 'hands_*', resource: '*', effect: 'allow' }]
@@ -63,7 +62,7 @@ export function generate({ agent, root, server, model, directory, snapshot = { r
     notes.push('Validated with OpenCode 2.3.0: generated local MCP connects and registers all 16 hands tools; native read/edit/glob/grep/shell permissions are denied. Model access still needs an available free quota or a provider connected by the user. Start from this isolated directory; managed policies still apply.')
   }
   if (model) args.push('--model', model)
-  return { files, launch: { command: agent, args, env, cwd: directory, notes,
+  return { files, launch: { command: agent, args, cwd: directory, notes,
     ...(snapshot.skills.length && agent !== 'opencode' ? { promptFile: path.join(directory, 'project-skills.md') } : {}) } }
 }
 

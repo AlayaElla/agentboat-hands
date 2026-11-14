@@ -1,8 +1,6 @@
-#!/usr/bin/env node
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
 
 export function summarize(directory) {
   const run = JSON.parse(fs.readFileSync(path.join(directory, 'run.json')))
@@ -45,8 +43,4 @@ export function summarize(directory) {
   const summary = { agent: run.agent, model: init?.model || run.model, checks, usage, ...(costUSD === undefined ? { costUSD: null, billing: 'CLI exposes tokens only; subscription percentage and USD debit unavailable' } : { costUSD }), callCount: calls.length, answer, calls }
   fs.writeFileSync(path.join(directory, 'summary.json'), JSON.stringify(summary, null, 2) + '\n')
   return { ...summary, calls: undefined }
-}
-
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  for (const directory of process.argv.slice(2)) console.log(JSON.stringify(summarize(directory), null, 2))
 }

@@ -53,9 +53,9 @@ after(() => fs.rmSync(temp, { recursive: true, force: true }))
 async function run(name, spec, { guarded = true, json = true } = {}) {
   const directory = path.join(temp, name)
   fs.mkdirSync(directory)
-  fs.writeFileSync(path.join(directory, 'launch.json'), JSON.stringify({ command: guarded ? fakeCodex : process.execPath, args: [fixture, ...(json ? ['--json'] : [])], cwd: directory, env: { HANDS_GUARD_FIXTURE: JSON.stringify(spec) } }))
+  fs.writeFileSync(path.join(directory, 'launch.json'), JSON.stringify({ command: guarded ? fakeCodex : process.execPath, args: [fixture, ...(json ? ['--json'] : [])], cwd: directory }))
   const started = Date.now()
-  const child = spawn(process.execPath, [runner, directory, 'fixture only'], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+  const child = spawn(process.execPath, [runner, directory, 'fixture only'], { env: { ...process.env, HANDS_GUARD_FIXTURE: JSON.stringify(spec) }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
   let stdout = '', stderr = ''
   child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8')
   child.stdout.on('data', data => { stdout += data })

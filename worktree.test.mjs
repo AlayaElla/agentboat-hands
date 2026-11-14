@@ -42,7 +42,10 @@ test('two simultaneous hands instances edit the same file in separate worktrees;
     // Restore only the known fixture files so normal git worktree remove can demonstrate clean removal.
     for (const directory of [a, b]) execFileSync('git', ['-C', directory, 'restore', '--source=HEAD', '--worktree', '--', 'shared.txt'], { windowsHide: true })
     await Promise.all([first.close(), second.close()]); first = second = undefined
-    worktree('remove', { repo, directory: a }); worktree('remove', { repo, directory: b })
+    // A manually deleted sibling must not prevent removing a remaining registered worktree.
+    assert.equal(path.dirname(a), temp)
+    fs.rmSync(a, { recursive: true })
+    worktree('remove', { repo, directory: b })
     assert.ok(!fs.existsSync(a) && !fs.existsSync(b))
     assert.match(worktree('list', { repo }), /worktree /)
     assert.match(git(['branch', '--list']), /test\/agent-a/)

@@ -23,7 +23,7 @@ export function worktree(action, { repo, directory, branch, base = 'HEAD' }) {
   if (action !== 'remove') throw new Error('Action must be create, list or remove.')
   directory = fs.realpathSync.native(directory)
   const registered = git(repo, ['worktree', 'list', '--porcelain', '-z']).split('\0\0').map(block => block.split('\0').find(row => row.startsWith('worktree '))?.slice(9)).filter(Boolean)
-  const resolved = registered.map(p => fs.realpathSync.native(p))
+  const resolved = registered.filter(p => fs.existsSync(p)).map(p => fs.realpathSync.native(p))
   if (!resolved.some(p => same(p, directory)) || same(resolved[0], directory)) throw new Error('Only an explicitly registered linked worktree can be removed, never the main checkout.')
   // Git also refuses locked worktrees and nested submodules; never force or delete by filesystem.
   git(repo, ['worktree', 'remove', '--', directory])

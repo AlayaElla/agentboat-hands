@@ -24,7 +24,7 @@ if (process.platform === 'win32' && !path.isAbsolute(command)) {
     command = process.execPath; args.unshift(entry)
   } else throw new Error(`Use a native ${command}.exe on Windows; a shell wrapper cannot preserve arbitrary argv.`)
 }
-const child = spawn(command, args, { cwd: launch.cwd, env: { ...process.env, ...launch.env }, stdio: [launch.promptFile ? 'pipe' : 'inherit', codex ? 'pipe' : 'inherit', 'inherit'], windowsHide: true, detached: codex && process.platform !== 'win32' })
+const child = spawn(command, args, { cwd: launch.cwd, stdio: [launch.promptFile ? 'pipe' : 'inherit', codex ? 'pipe' : 'inherit', 'inherit'], windowsHide: true, detached: codex && process.platform !== 'win32' })
 if (launch.promptFile) {
   child.stdin.on('error', error => { if (error.code !== 'EPIPE') console.error(error.message) })
   child.stdin.end(text)

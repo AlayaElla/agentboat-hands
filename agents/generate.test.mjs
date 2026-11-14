@@ -20,12 +20,27 @@ test('Windows remote paths survive macOS argv and PowerShell quoting, without sh
   for (const root of ['relative/path', 'C:relative', 'D:/project\nexit']) assert.throws(() => transport({ ssh: 'host', root }))
 })
 
+test('PowerShell launch quotes ASCII and all four smart apostrophes as literal path data', { skip: process.platform !== 'win32' }, () => {
+  for (const quote of ["'", '‘', '’', '‚', '‛']) {
+    const root = `D:/x${quote}; Write-Output INJECTED; ${quote}`
+    const hands = `D:/team${quote}s demo/hands.mjs`, pdfPython = `D:/team${quote}s demo/python.exe`
+    const server = transport({ ssh: 'unused-host', root, hands, pdfPython })
+    const script = Buffer.from(server.args.at(-1).split(' ').at(-1), 'base64').toString('utf16le')
+    // Replace only the node program with a PowerShell function; no SSH, model or desktop is used.
+    const stub = 'function node { ConvertTo-Json -InputObject @{ argv=@($args); pdf=$env:HANDS_PDF_PYTHON } -Compress }; $global:LASTEXITCODE=0; '
+    const output = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(stub + script, 'utf16le').toString('base64')], { encoding: 'utf8', windowsHide: true })
+    assert.deepEqual(JSON.parse(output), { argv: [hands, root], pdf: pdfPython })
+  }
+})
+
 test('all generated clients preapprove only hands; Codex host stays read-only and unelevated', () => {
   const server = transport({ ssh: 'boat@windows', root: 'D:/project', hands: 'D:/hands/hands.mjs' })
   for (const agent of ['claude', 'codex', 'opencode']) {
     const { files, launch } = generate({ agent, root: 'D:/project', server, directory: '/tmp/boat session' })
     assert.match(files['remote-only.md'], /never fall back locally/)
     assert.equal(launch.command, agent)
+    assert.equal(Object.hasOwn(launch, 'env'), false)
+    assert.equal(Object.hasOwn(files, 'overrides.txt'), false)
     assert.ok(!launch.args.some(arg => /dangerously|bypassPermissions|elevated"/.test(arg) && !arg.includes('unelevated')))
     if (agent === 'claude') {
       assert.deepEqual(JSON.parse(files['mcp.json']).mcpServers.hands, server)
