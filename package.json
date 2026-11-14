@@ -2,6 +2,7 @@
   "name": "agentboat-hands",
   "version": "0.2.0",
   "description": "MCP tool server that lets an AI agent running on another machine work on this one: files, commands and the desktop. No npm dependencies, not tied to one agent.",
+  "license": "MIT",
   "scripts": {
     "test": "node --test"
   },
