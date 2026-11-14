@@ -81,7 +81,7 @@ const targetWindow = { window_id: str('Decimal handle from desktop_windows; must
 const definitions = {
   desktop_displays: ['List monitors, their physical pixel bounds, DPI and the virtual desktop bounds.', {}, []],
   desktop_windows: ['List visible top-level windows: handle, title, process, physical bounds, minimized and foreground state.', {}, []],
-  desktop_focus: ['Restore and foreground a window. Returns an error if Windows refuses; never sends a synthetic key to steal focus.', targetWindow, ['window_id']],
+  desktop_focus: ['Restore and foreground a window, temporarily attaching input threads when called from the background. Confirms the foreground handle afterwards; returns an error if Windows refuses.', targetWindow, ['window_id']],
   desktop_screenshot: ['Capture desktop, monitor, window (PrintWindow), or region as MCP PNG. Physical screen = bounds origin + image pixel / scaleX or scaleY. Default maximum dimension 1600; PNG at most 3.5 MB.', {
     target: { type: 'string', enum: ['desktop', 'monitor', 'window', 'region'] }, ...targetWindow,
     monitor: num('Zero-based monitor index from desktop_displays'), x: num('Physical screen x, may be negative'), y: num('Physical screen y, may be negative'), width: num('Region width in physical pixels'), height: num('Region height in physical pixels'), max_dimension: num('Maximum output dimension, 64..4096; default 1600'),

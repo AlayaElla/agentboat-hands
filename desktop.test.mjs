@@ -135,7 +135,7 @@ test('Windows real broker, own-window capture and opt-in guarded input', { skip:
     assert.equal(region.imageWidth, 64)
     const outside = await client.call('desktop_screenshot', { target: 'region', x: -100000, y: -100000, width: 100, height: 100 })
     assert.equal(outside.isError, true)
-    fixture = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-STA', '-File', path.join(here, 'test-window.ps1'), '-StatePath', stateFile, ...(inputEnabled ? ['-Activate'] : [])], { windowsHide: true, stdio: ['ignore', 'ignore', 'inherit'] })
+    fixture = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-STA', '-File', path.join(here, 'test-window.ps1'), '-StatePath', stateFile], { windowsHide: true, stdio: ['ignore', 'ignore', 'inherit'] })
     const before = await until(() => fs.existsSync(stateFile) && readState())
     const target = await until(async () => {
       const windows = value(await client.call('desktop_windows'))
@@ -150,17 +150,21 @@ test('Windows real broker, own-window capture and opt-in guarded input', { skip:
     const pixel = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `Add-Type -AssemblyName System.Drawing; $b=[Drawing.Bitmap]::FromFile('${ownImage}'); try { $c=$b.GetPixel($b.Width-30,$b.Height-30); '{0},{1},{2}' -f $c.R,$c.G,$c.B } finally { $b.Dispose() }`], { windowsHide: true, encoding: 'utf8' }).trim()
     assert.equal(pixel, '230,240,250', 'DPI-unaware fixture fills the physical capture instead of leaving a black strip')
     // Reject focus/point errors before any SendInput even when input tests are disabled.
-    const guarded = target.foreground
-      ? await client.call('desktop_mouse', { window_id: target.window_id, action: 'click', x: -100000, y: -100000 })
-      : await client.call('desktop_type', { window_id: target.window_id, text: 'must not be delivered' })
+    const guarded = await client.call('desktop_mouse', { window_id: target.window_id, action: 'click', x: -100000, y: -100000 })
     assert.equal(guarded.isError, true); assert.match(text(guarded), /FOCUS_LOST|POINT_BLOCKED/)
     let input = 'disabled (set HANDS_TEST_INPUT=1 explicitly)'
+    let focus
     let after = readState()
     assert.equal(after.clicks, 0); assert.equal(after.text, '')
     if (inputEnabled) {
-      // Never steal focus during validation. If the user switched away, stop immediately.
+      // Explicit opt-in permits foreground activation of this exact fixture only.
+      const focused = await client.call('desktop_focus', { window_id: target.window_id })
+      focus = focused.isError ? { error: text(focused) } : value(focused)
+      if (!focused.isError) {
+        assert.equal(focus.window_id, target.window_id); assert.equal(focus.pid, fixture.pid); assert.equal(focus.foreground, true)
+      } else assert.match(focus.error, /FOCUS_LOST|User modifier/)
       const current = value(await client.call('desktop_windows')).find(w => w.window_id === target.window_id)
-      if (!current?.foreground) input = 'aborted: FOCUS_LOST before any input'
+      if (focused.isError || !current?.foreground || current.pid !== fixture.pid || current.title !== before.title) input = `aborted: ${focus.error || 'FOCUS_LOST before any input'}`
       else {
         const clicked = await client.call('desktop_mouse', { window_id: target.window_id, action: 'click', x: before.x, y: before.y })
         if (clicked.isError && /FOCUS_LOST|POINT_BLOCKED|User modifier/.test(text(clicked))) input = `aborted: ${text(clicked)}`
@@ -178,7 +182,7 @@ test('Windows real broker, own-window capture and opt-in guarded input', { skip:
       after = readState()
       saveImage(await client.call('desktop_screenshot', { target: 'window', window_id: target.window_id }), 'input-window-after.png')
     } else t.diagnostic('Real input disabled; no focus activation or successful SendInput was attempted.')
-    const report = { inputEnabled, input, before, after, displays, desktop, monitor, region, acl, screenshots: [path.join(evidence, beforeName), ...(inputEnabled ? [path.join(evidence, 'input-window-after.png')] : [])] }
+    const report = { inputEnabled, input, focus, before, after, displays, desktop, monitor, region, acl, screenshots: [path.join(evidence, beforeName), ...(inputEnabled ? [path.join(evidence, 'input-window-after.png')] : [])] }
     fs.writeFileSync(path.join(evidence, inputEnabled ? 'input-report.json' : 'readonly-report.json'), JSON.stringify(report, null, 2))
     t.diagnostic(input)
   } finally {

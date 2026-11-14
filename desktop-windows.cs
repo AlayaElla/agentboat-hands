@@ -22,11 +22,16 @@ public static class HandsDesktop {
     [StructLayout(LayoutKind.Sequential)] struct KEYBDINPUT { public ushort vk, scan; public uint flags, time; public UIntPtr extra; }
     [StructLayout(LayoutKind.Explicit)] struct UNION { [FieldOffset(0)] public MOUSEINPUT mouse; [FieldOffset(0)] public KEYBDINPUT key; }
     [StructLayout(LayoutKind.Sequential)] struct INPUT { public uint type; public UNION value; }
+    [StructLayout(LayoutKind.Sequential)] struct MSG { public IntPtr hwnd; public uint message; public UIntPtr wParam; public IntPtr lParam; public uint time; public POINT point; public uint privateData; }
     delegate bool EnumProc(IntPtr h, IntPtr param);
     [DllImport("user32.dll")] static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
     [DllImport("user32.dll")] static extern IntPtr GetWindowDpiAwarenessContext(IntPtr h);
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
+    [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr h);
+    [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll", SetLastError=true)] static extern bool AttachThreadInput(uint from, uint to, bool attach);
+    [DllImport("user32.dll")] static extern bool PeekMessage(out MSG message, IntPtr h, uint min, uint max, uint remove);
     [DllImport("user32.dll")] static extern bool ShowWindowAsync(IntPtr h, int cmd);
     [DllImport("user32.dll")] static extern bool IsWindow(IntPtr h);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
@@ -111,8 +116,25 @@ public static class HandsDesktop {
     public static object Focus(string id) {
         var h=Handle(id);
         if(IsIconic(h)) { ShowWindowAsync(h,9); Thread.Sleep(100); }
-        SetForegroundWindow(h); Thread.Sleep(80);
-        if(GetForegroundWindow()!=h) throw new Exception("Windows refused foreground activation. Select the target window locally, then retry explicitly.");
+        SetForegroundWindow(h);
+        if(GetForegroundWindow()!=h) {
+            NoHeldKeys();
+            uint pid, current=GetCurrentThreadId();
+            uint foreground=GetWindowThreadProcessId(GetForegroundWindow(),out pid), target=GetWindowThreadProcessId(h,out pid);
+            MSG message; PeekMessage(out message,IntPtr.Zero,0,0,0);
+            bool attachedForeground=false, attachedTarget=false;
+            try {
+                // Share the foreground input queue only while activating this window, then always detach.
+                if(foreground!=0 && foreground!=current) attachedForeground=AttachThreadInput(current,foreground,true);
+                if(target!=0 && target!=current && target!=foreground) attachedTarget=AttachThreadInput(current,target,true);
+                BringWindowToTop(h); SetForegroundWindow(h);
+            } finally {
+                if(attachedTarget) AttachThreadInput(current,target,false);
+                if(attachedForeground) AttachThreadInput(current,foreground,false);
+            }
+        }
+        Thread.Sleep(80);
+        if(GetForegroundWindow()!=h) throw new Exception("FOCUS_LOST: Windows refused foreground activation; no target input was sent.");
         return Window(h);
     }
     static Bitmap CaptureWindow(IntPtr h) {
