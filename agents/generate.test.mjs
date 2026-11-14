@@ -45,9 +45,11 @@ test('all generated clients preapprove only hands; Codex host stays read-only an
 })
 
 test('CLI writes portable files and refuses to overwrite an existing directory', () => {
-  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'hands-config-'))
+  const sandbox = path.resolve(process.env.AGENTBOAT_SANDBOX || path.join(os.tmpdir(), 'agentboat-sandbox'))
+  fs.mkdirSync(sandbox, { recursive: true })
+  const temp = fs.mkdtempSync(path.join(sandbox, 'agentboat-demo-config-'))
   const directory = path.join(temp, 'config')
-  const args = [fileURLToPath(new URL('./generate.mjs', import.meta.url)), '--agent', 'claude', '--root', 'D:/test', '--ssh', 'user@win', '--hands', 'D:/hands/hands.mjs', '--out', directory]
+  const args = [fileURLToPath(new URL('./generate.mjs', import.meta.url)), '--agent', 'claude', '--local', '--root', temp, '--out', directory]
   try {
     execFileSync(process.execPath, args)
     assert.equal(JSON.parse(fs.readFileSync(path.join(directory, 'launch.json'))).cwd, directory)

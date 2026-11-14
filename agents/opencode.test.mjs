@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createInterface } from 'node:readline'
-import { randomBytes } from 'node:crypto'
+import { randomBytes, createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 
@@ -13,12 +13,26 @@ test('OpenCode loads generated local config, registers hands tools and denies na
   skip: !process.env.HANDS_TEST_OPENCODE_BIN, timeout: 45000,
 }, async () => {
   const executable = process.env.HANDS_TEST_OPENCODE_BIN
-  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'hands-opencode-check-'))
-  const root = path.join(temp, 'remote 中文'), host = path.join(temp, 'host')
+  const sandbox = path.resolve(process.env.AGENTBOAT_SANDBOX || path.join(os.tmpdir(), 'agentboat-sandbox'))
+  fs.mkdirSync(sandbox, { recursive: true })
+  const temp = fs.mkdtempSync(path.join(sandbox, 'agentboat-demo-opencode-check-'))
+  const root = path.join(temp, 'agentboat-demo-remote 中文'), host = path.join(temp, 'host')
   fs.mkdirSync(root)
+  const skill = '---\nname: opencode-demo-check\ndescription: Demo check\n---\n\nReply OPENCODE_SKILL_OK.\n'
+  fs.mkdirSync(path.join(root, '.agents/skills/opencode-demo-check'), { recursive: true })
+  fs.mkdirSync(path.join(root, '.agentboat'))
+  fs.writeFileSync(path.join(root, '.agents/skills/opencode-demo-check/SKILL.md'), skill)
+  const sha256 = createHash('sha256').update('SKILL.md\0').update(skill).update('\0').digest('hex')
+  fs.writeFileSync(path.join(root, '.agentboat/skill-reviews.json'), JSON.stringify({ 'opencode-demo-check': { reviewer: 'test-main', source: 'test approval', sha256 } }))
+  const git = args => execFileSync('git', ['-C', root, ...args], { windowsHide: true, stdio: 'pipe' })
+  git(['init', '-q']); git(['config', 'core.autocrlf', 'false']); git(['add', '.'])
+  git(['-c', 'user.name=AgentBoat Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'reviewed fixture', '--no-verify'])
   const password = randomBytes(32).toString('base64url') // Ephemeral loopback-server auth only; never stored or printed.
   const env = { ...process.env, OPENCODE_PASSWORD: password, XDG_CONFIG_HOME: path.join(temp, 'config'), XDG_DATA_HOME: path.join(temp, 'data'), XDG_CACHE_HOME: path.join(temp, 'cache'), XDG_STATE_HOME: path.join(temp, 'state') }
   execFileSync(process.execPath, [fileURLToPath(new URL('./generate.mjs', import.meta.url)), '--agent', 'opencode', '--local', '--root', root, '--out', host], { env, windowsHide: true })
+  const generatedConfig = JSON.parse(fs.readFileSync(path.join(host, 'opencode.json')))
+  assert.ok(generatedConfig.instructions.includes(path.join(host, 'project-skills.md')))
+  assert.match(fs.readFileSync(path.join(host, 'project-skills.md'), 'utf8'), /OPENCODE_SKILL_OK/)
   const child = spawn(executable, ['serve', '--stdio', '--hostname', '127.0.0.1', '--port', '0', '--print-logs'], { env, cwd: host, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
   const exited = new Promise((resolve, reject) => { child.once('exit', resolve); child.once('error', reject) })
   let logs = ''
@@ -56,7 +70,7 @@ test('OpenCode loads generated local config, registers hands tools and denies na
       assert.equal(data.effect, action.startsWith('hands_') ? 'allow' : 'deny', action)
     }
     assert.match(logs, /mcp connected[^\n]*server=hands[^\n]*tools=16/)
-    const report = { version: execFileSync(executable, ['--version'], { encoding: 'utf8', windowsHide: true }).trim(), transport: 'generated --local config through real OpenCode MCP client', server, toolCount: 16, agent: agent.id, decisions, modelCalls: 0, boundary: 'real permission evaluation, not a model-generated tool execution', isolatedPaths: { config: env.XDG_CONFIG_HOME, data: env.XDG_DATA_HOME, cache: env.XDG_CACHE_HOME, state: env.XDG_STATE_HOME } }
+    const report = { version: execFileSync(executable, ['--version'], { encoding: 'utf8', windowsHide: true }).trim(), transport: 'generated --local config through real OpenCode MCP client', server, toolCount: 16, agent: agent.id, decisions, projectSkills: JSON.parse(fs.readFileSync(path.join(host, 'project-skills.json'))), instructionFiles: generatedConfig.instructions, modelCalls: 0, boundary: 'real permission evaluation and skill configuration, not a model-generated tool execution', isolatedPaths: { config: env.XDG_CONFIG_HOME, data: env.XDG_DATA_HOME, cache: env.XDG_CACHE_HOME, state: env.XDG_STATE_HOME } }
     if (process.env.HANDS_OPENCODE_EVIDENCE_DIR) {
       fs.mkdirSync(process.env.HANDS_OPENCODE_EVIDENCE_DIR, { recursive: true })
       fs.writeFileSync(path.join(process.env.HANDS_OPENCODE_EVIDENCE_DIR, 'integration.json'), JSON.stringify(report, null, 2) + '\n')
@@ -67,6 +81,7 @@ test('OpenCode loads generated local config, registers hands tools and denies na
     child.stdin.end()
     const timer = setTimeout(() => child.kill(), 5000)
     await exited.finally(() => clearTimeout(timer))
+    assert.equal(path.dirname(temp), sandbox)
     fs.rmSync(temp, { recursive: true, force: true })
   }
 })

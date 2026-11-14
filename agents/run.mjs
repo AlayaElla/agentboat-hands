@@ -10,7 +10,9 @@ if (!directory || !prompt.length) throw new Error('Usage: node run.mjs <generate
 const launch = JSON.parse(fs.readFileSync(path.resolve(directory, 'launch.json'), 'utf8'))
 const codex = /^codex(?:\.(?:exe|cmd|ps1))?$/i.test(path.basename(launch.command))
 if (codex && !launch.args.includes('--json')) throw new Error('Codex guard requires --json events. Regenerate this launch configuration.')
-const args = [...launch.args, prompt.join(' ')]
+const text = (launch.promptFile ? fs.readFileSync(launch.promptFile, 'utf8') + '\nTask:\n' : '') + prompt.join(' ')
+// Skill bodies can exceed Windows argv limits; Claude and Codex accept prompts over stdin.
+const args = [...launch.args, ...(launch.promptFile ? (codex ? ['-'] : []) : [text])]
 let command = launch.command
 if (process.platform === 'win32' && !path.isAbsolute(command)) {
   const found = execFileSync('where.exe', [command], { encoding: 'utf8', windowsHide: true }).trim().split(/\r?\n/)
@@ -22,7 +24,11 @@ if (process.platform === 'win32' && !path.isAbsolute(command)) {
     command = process.execPath; args.unshift(entry)
   } else throw new Error(`Use a native ${command}.exe on Windows; a shell wrapper cannot preserve arbitrary argv.`)
 }
-const child = spawn(command, args, { cwd: launch.cwd, env: { ...process.env, ...launch.env }, stdio: codex ? ['inherit', 'pipe', 'inherit'] : 'inherit', windowsHide: true, detached: codex && process.platform !== 'win32' })
+const child = spawn(command, args, { cwd: launch.cwd, env: { ...process.env, ...launch.env }, stdio: [launch.promptFile ? 'pipe' : 'inherit', codex ? 'pipe' : 'inherit', 'inherit'], windowsHide: true, detached: codex && process.platform !== 'win32' })
+if (launch.promptFile) {
+  child.stdin.on('error', error => { if (error.code !== 'EPIPE') console.error(error.message) })
+  child.stdin.end(text)
+}
 let stopped = false
 function stop(reason) {
   if (stopped) return

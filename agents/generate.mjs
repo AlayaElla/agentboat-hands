@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { loadProjectSkills, snapshotFiles } from './project-skills.mjs'
 
 const ps = value => "'" + value.replace(/'/g, "''") + "'"
 const toml = value => JSON.stringify(value) // JSON strings and arrays are also TOML basic strings/arrays.
@@ -22,10 +23,10 @@ export function transport({ ssh, root, hands = fileURLToPath(new URL('../hands.m
     'powershell.exe -NoProfile -NonInteractive -EncodedCommand ' + Buffer.from(script, 'utf16le').toString('base64')] }
 }
 
-export function generate({ agent, root, server, model, directory }) {
+export function generate({ agent, root, server, model, directory, snapshot = { revision: null, skills: [] } }) {
   if (!['claude', 'codex', 'opencode'].includes(agent)) throw new Error('agent must be claude, codex or opencode.')
-  const instructions = `Project files, commands and desktop are on the hands machine, root ${root}. Use only hands MCP tools for all project work. Never use host shell, exec_command, apply_patch, local project file/search, browser/computer, skills or subagents. If hands fails, stop and report; never fall back locally. Read PDFs with read_file pdf_format=text if documents cannot be opened. Commands are not sandboxed on hands; stay in the assigned root.` + (agent === 'claude' ? ' You may use built-in Read only on ~/.claude/projects/** to open PDF attachments cached by Claude Code; never read other host paths.' : '')
-  const files = { 'remote-only.md': instructions + '\n' }
+  const instructions = `Project files, commands and desktop are on the hands machine, root ${root}. Use only hands MCP tools for all project work. Never use host shell, exec_command, apply_patch, local project file/search, browser/computer, native skill tools or subagents. Reviewed project skill instructions are supplied in the task/configuration; apply them when relevant, but execute their scripts and read supporting files only through hands at the stated source paths. If hands fails, stop and report; never fall back locally. Read PDFs with read_file pdf_format=text if documents cannot be opened. Commands are not sandboxed on hands; stay in the assigned root.` + (agent === 'claude' ? ' You may use built-in Read only on ~/.claude/projects/** to open PDF attachments cached by Claude Code; never read other host paths.' : '')
+  const files = { 'remote-only.md': instructions + '\n', ...snapshotFiles(snapshot, root) }
   let args, env = {}, notes = []
   if (agent === 'claude') {
     files['mcp.json'] = JSON.stringify({ mcpServers: { hands: server } }, null, 2) + '\n'
@@ -56,13 +57,14 @@ export function generate({ agent, root, server, model, directory }) {
       $schema: 'https://opencode.ai/config.json',
       mcp: { servers: { hands: { type: 'local', command: [server.command, ...server.args], codemode: false, ...(server.env ? { environment: server.env } : {}) } } },
       permissions, default_agent: 'hands', agents: { hands: { mode: 'primary', system: instructions, permissions } },
-      instructions: [path.join(directory, 'remote-only.md')], ...(model ? { model } : {}),
+      instructions: [path.join(directory, 'remote-only.md'), ...(snapshot.skills.length ? [path.join(directory, 'project-skills.md')] : [])], ...(model ? { model } : {}),
     }, null, 2) + '\n'
     args = ['run', '--standalone']
     notes.push('Validated with OpenCode 2.3.0: generated local MCP connects and registers all 16 hands tools; native read/edit/glob/grep/shell permissions are denied. Model access still needs an available free quota or a provider connected by the user. Start from this isolated directory; managed policies still apply.')
   }
   if (model) args.push('--model', model)
-  return { files, launch: { command: agent, args, env, cwd: directory, notes } }
+  return { files, launch: { command: agent, args, env, cwd: directory, notes,
+    ...(snapshot.skills.length && agent !== 'opencode' ? { promptFile: path.join(directory, 'project-skills.md') } : {}) } }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
@@ -71,9 +73,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
     if (!values.out) throw new Error('Usage: node generate.mjs --agent claude|codex|opencode --ssh user@windows --root D:/project --out <new-directory> [--hands D:/tools/agentboat-hands/hands.mjs] [--model name] [--pdf-python D:/venv/Scripts/python.exe]. --local is only for same-machine tests.')
     const directory = path.resolve(values.out)
     const server = transport({ ...values, pdfPython: values['pdf-python'] })
-    const result = generate({ ...values, directory, server })
+    const snapshot = loadProjectSkills({ ...values, server })
+    const result = generate({ ...values, directory, server, snapshot })
     fs.mkdirSync(directory) // refuse existing directories, never overwrite a configuration
-    for (const [name, content] of Object.entries(result.files)) fs.writeFileSync(path.join(directory, name), content, { flag: 'wx' })
+    for (const [name, content] of Object.entries(result.files)) {
+      fs.mkdirSync(path.dirname(path.join(directory, name)), { recursive: true })
+      fs.writeFileSync(path.join(directory, name), content, { flag: 'wx' })
+    }
     fs.writeFileSync(path.join(directory, 'launch.json'), JSON.stringify(result.launch, null, 2) + '\n', { flag: 'wx' })
     console.log(JSON.stringify({ directory, ...result.launch }, null, 2))
   } catch (error) { console.error(error.message); process.exitCode = 1 }

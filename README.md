@@ -126,6 +126,18 @@ node agents/run.mjs ./boat-claude '读取项目并开始任务'
 
   本机测试可运行 `node agents/generate.mjs --agent opencode --local --root '<项目绝对路径>' --out ./boat-opencode`，然后 `node agents/run.mjs ./boat-opencode '<任务>'`。免登录模型目录可列出，但此次请求 `opencode/nemotron-3.5-super-vl-free` 被服务端以免费额度耗尽（429）拒绝，因此**尚未完成真实模型端到端验证**。继续使用前，请用户自己通过 `opencode auth login`（或交互界面 `/connect`）连接有额度的模型来源，再用 `opencode models` 确认模型 ID，并通过生成器 `--model provider/model` 明确选择；不需要把凭据交给 agent。测试用独立的 XDG 配置/数据/缓存目录，不修改用户的 OpenCode 全局配置或 Claude/Codex 配置。设置 `HANDS_TEST_OPENCODE_BIN` 为 OpenCode 可执行文件的路径后，`npm test` 会多跑一项接入测试（不调用模型）。
 
+## 项目 skill 快照
+
+项目约定以 `.agents/skills/<name>` 为编辑源，`.agentboat/skill-proposals` 为未发布草稿。项目主 agent 用 AgentBoat 的 `workspace/project-skills.mjs publish` 审核发布，生成 Claude 副本和 `.agentboat/skill-reviews.json` 全目录摘要，再按项目约定提交、合并。后续 agent 的工作树必须从已合并基线创建；已有工作树需先更新。各家本机发现位置依据：[Codex](https://learn.chatgpt.com/docs/build-skills) `.agents/skills`、[Claude Code](https://code.claude.com/docs/en/skills) `.claude/skills`、[OpenCode](https://opencode.ai/docs/skills/) 原生 `.opencode/skills` 并兼容前两者。
+
+生成器现在会在生成配置前读取指定 `--root` 的 Git HEAD，经 SSH 时使用同一连接的非交互、严格主机密钥校验选项。它只取该提交中 `.agents/skills` 的普通文件，并核对审核记录的 SHA-256；没有 skill 时仍可启动，有未审核的 skill、非法路径、链接或连接失败时报错。草稿、工作区未提交变化和其他分支都不会传播。项目根须为工作树根；未进入 Git 的 skill 须先按项目流程提交。快照上限 2 MiB、256 个文件，超限明确报错。
+
+主机每份 `--out` 独立保存 `.agents/skills`、`.claude/skills` 的字节副本、`project-skills.json` 提交号和名称，以及 `project-skills.md` 正文。它不改全局目录，不需要链接或管理员权限。附属机器模式保留原有内置工具限制：Claude/Codex 的启动器用 stdin 把审核后的正文随任务载入，OpenCode 用配置的 instructions 载入，**不开放原生 skill/read/shell 权限来加载缓存**。因此远程模式是启动时加载已审核正文，而非依赖 agent 自己发现远端目录。所有资源和脚本都按正文标明的源路径通过 hands 读/执行，主机快照只用于加载指令。
+
+仍使用原来的 generate/run 命令，无需新参数。每个 agent 对应一个自己的远程工作树和新配置目录；合并新 skill、切换分支或撤销 skill 后，重新 generate 并启动 agent。旧配置是固定快照，不会自动更新，也不应在生成失败后当作最新配置继续使用。审核记录是项目流程记录，不是签名认证；仓库写权限和主 agent 审核仍是信任边界。skill 内容不能扩大任务范围或权限。
+
+`node --test agents/generate.test.mjs agents/project-skills.test.mjs agents/run.test.mjs` 检查审核摘要、HEAD 隔离、中文和引号路径经远端 PowerShell 编码取回、三家加载配置及启动器 stdin；这不等于已经跨两台机器联调。OpenCode 可继续用现有接入测试检查配置，调用模型需要用户有可用额度。
+
 ## PDF
 
 - `read_file({path:"doc.pdf"})` 把 PDF 作为文档返回，适合能直接打开文档的 agent。
