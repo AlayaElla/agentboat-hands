@@ -55,6 +55,13 @@ test('CLI writes portable files and refuses to overwrite an existing directory',
   } finally { fs.rmSync(temp, { recursive: true, force: true }) }
 })
 
+test('OpenCode pins an explicitly selected model on the CLI instead of permitting default-model fallback', () => {
+  const { files, launch } = generate({ agent: 'opencode', root: 'D:/project', server: transport({ local: true, root: '.' }), directory: '/tmp/boat', model: 'opencode/nemotron-3.5-super-vl-free' })
+  assert.equal(JSON.parse(files['opencode.json']).model, 'opencode/nemotron-3.5-super-vl-free')
+  assert.deepEqual(launch.args, ['run', '--standalone', '--model', 'opencode/nemotron-3.5-super-vl-free'])
+  assert.match(launch.notes.join(''), /Validated with OpenCode 2.3.0/)
+})
+
 test('launcher preserves empty arguments, Unicode, spaces and embedded quotes without a shell', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hands-launch-'))
   const values = ['', 'a="one two"', '中文 $x; & (three)', "it's literal"]

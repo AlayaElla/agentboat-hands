@@ -59,9 +59,9 @@ export function generate({ agent, root, server, model, directory }) {
       instructions: [path.join(directory, 'remote-only.md')], ...(model ? { model } : {}),
     }, null, 2) + '\n'
     args = ['run', '--standalone']
-    notes.push('OpenCode V2 official schema (2026-11-13), not installed or runtime tested. Start from this isolated directory; check managed/global policies and installed plugins before use.')
+    notes.push('Validated with OpenCode 2.3.0: generated local MCP connects and registers all 16 hands tools; native read/edit/glob/grep/shell permissions are denied. Model access still needs an available free quota or a provider connected by the user. Start from this isolated directory; managed policies still apply.')
   }
-  if (model && agent !== 'opencode') args.push('--model', model)
+  if (model) args.push('--model', model)
   return { files, launch: { command: agent, args, env, cwd: directory, notes } }
 }
 
