@@ -152,6 +152,10 @@ test('write_file refuses a path below a dangling directory link', async () => {
   assert.equal(fs.existsSync(target), false)
 })
 
+test('read_file rejects fractions and negative page lengths without returning a looping continuation', async () => {
+  for (const page of [{ limit: -1 }, { offset: 1.5 }]) assert.match((await call('read_file', { path: 'big.txt', ...page })).text, /positive integers/)
+})
+
 test('refuses to change a file it has not read, or one that changed since', async () => {
   fs.writeFileSync(f('guard.txt'), 'one\n')
   assert.match((await call('write_file', { path: 'guard.txt', content: 'two\n' })).text, /Read this file/)
@@ -192,6 +196,7 @@ test('finds files and searches content, GBK included', async () => {
   assert.equal((await call('find_files', { pattern: 'node_modules/**/*.js' })).text, 'node_modules/pkg/index.js')
   assert.equal((await call('search_content', { pattern: 'needle' })).text, 'sub/deep/x.ts:1:export const needle = 1')
   assert.equal((await call('search_content', { pattern: 'NEEDLE', ignore_case: true, files_only: true })).text, 'sub/deep/x.ts')
+  assert.equal((await call('search_content', { pattern: 'needle', glob: 'sub\\deep\\*.ts', files_only: true })).text, 'sub/deep/x.ts')
   assert.match((await call('search_content', { pattern: '中文', glob: '*.txt', files_only: true })).text, /^gbk\.txt$/m)
   assert.equal((await call('search_content', { pattern: 'row 4999', path: 'big.txt', context: 1 })).text,
     'big.txt:4998-row 4998\nbig.txt:4999:row 4999\nbig.txt:5000-row 5000\n--')

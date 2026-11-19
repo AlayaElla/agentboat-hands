@@ -146,19 +146,21 @@ async function readFile({ path: p, offset, limit, pdf_format = 'document' }) {
   if (stat.size > MAX_TEXT_BYTES) throw new Error(`File is ${stat.size} bytes, too large to load. View part of it with run_command.`)
   const decoded = decode(fs.readFileSync(file))
   if (!decoded) throw new Error('Binary file. Inspect or convert it with run_command.')
+  const page = textLines(decoded.text, offset, limit, decoded.enc === 'gb18030' ? 'GBK-encoded: can be read but not edited' : '')
   seen.set(file, stat.mtimeMs)
-  return textLines(decoded.text, offset, limit, decoded.enc === 'gb18030' ? 'GBK-encoded: can be read but not edited' : '')
+  return page
 }
 
 function textLines(text, offset, limit, note) {
   const lines = text.replace(/\r\n/g, '\n').split('\n')
   if (lines.at(-1) === '') lines.pop()
   if (!lines.length) return '(empty file)'
-  const first = Math.max(1, Number(offset) || 1)
+  const first = offset ?? 1, count = limit ?? 2000
+  if (!Number.isSafeInteger(first) || first < 1 || !Number.isSafeInteger(count) || count < 1) throw new Error('offset and limit must be positive integers.')
   if (first > lines.length) return `[the file has only ${lines.length} lines]`
   const out = []
   let budget = MAX_CHARS
-  for (const line of lines.slice(first - 1, first - 1 + (Number(limit) || 2000))) {
+  for (const line of lines.slice(first - 1, first - 1 + count)) {
     if (line.length > budget) {
       if (!out.length) out.push(line.slice(0, budget) + ' [line cut here]')
       break
@@ -193,10 +195,11 @@ function editFile({ path: p, old_string, new_string, replace_all }) {
   const text = lf(cur.text)
   const find = lf(old_string)
   if (!find) throw new Error('old_string is empty.')
-  const count = text.split(find).length - 1
+  const parts = text.split(find)
+  const count = parts.length - 1
   if (!count) throw new Error('old_string was not found. It must match the file exactly, including spaces and indentation.')
   if (count > 1 && !replace_all) throw new Error(`old_string appears ${count} times. Include more surrounding text to make it unique, or set replace_all.`)
-  save(file, text.split(find).join(lf(new_string)), { ...cur, crlf: cur.text.includes('\r\n') })
+  save(file, parts.join(lf(new_string)), { ...cur, crlf: cur.text.includes('\r\n') })
   return `Replaced ${count} occurrence${count > 1 ? 's' : ''} in ${file}`
 }
 
@@ -230,7 +233,8 @@ function findFiles({ pattern, path: p = '.' }) {
 function searchContent({ pattern, path: p = '.', glob, ignore_case, files_only, context, max_results }) {
   const base = inRoots(p)
   const re = new RegExp(String(pattern), ignore_case ? 'i' : '')
-  const only = glob && globToRegExp(String(glob).replace(/\\/g, '/'))
+  const normalizedGlob = glob && String(glob).replace(/\\/g, '/')
+  const only = normalizedGlob && globToRegExp(normalizedGlob)
   const around = Math.max(0, Number(context) || 0)
   const max = Number(max_results) || 100
   const single = fs.statSync(base).isFile()
@@ -238,7 +242,7 @@ function searchContent({ pattern, path: p = '.', glob, ignore_case, files_only, 
   let matches = 0
   for (const file of single ? [base] : walk(base)) {
     const rel = single ? path.basename(file) : slashed(base, file)
-    if (only && !only.test(String(glob).includes('/') ? rel : path.basename(file))) continue
+    if (only && !only.test(normalizedGlob.includes('/') ? rel : path.basename(file))) continue
     let decoded
     try { decoded = fs.statSync(file).size <= 2_000_000 && decode(fs.readFileSync(file)) } catch { continue }
     if (!decoded) continue

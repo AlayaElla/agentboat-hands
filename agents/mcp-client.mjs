@@ -8,12 +8,11 @@ export function client(server) {
   let id = 0, errors = '', stopped
   const pending = new Map()
   child.stderr.on('data', data => { errors = (errors + data).slice(-4000) })
-  const lines = createInterface({ input: child.stdout })
-  lines.on('line', line => {
-    const message = JSON.parse(line)
-    pending.get(message.id)?.resolve(message)
-  })
   const fail = error => { stopped = error; for (const request of pending.values()) request.reject(error) }
+  createInterface({ input: child.stdout }).on('line', line => {
+    try { const message = JSON.parse(line); pending.get(message.id)?.resolve(message) }
+    catch { fail(new Error('Invalid JSON in MCP response')) }
+  })
   child.stdin.on('error', fail)
   child.on('error', fail)
   child.on('exit', code => fail(new Error(`MCP exited ${code}: ${errors}`)))

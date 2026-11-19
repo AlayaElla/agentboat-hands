@@ -139,8 +139,7 @@ node agents/run.mjs ./boat-claude '读取项目并开始任务'
 
 ## PDF
 
-- `read_file({path:"doc.pdf"})` 把 PDF 作为文档返回，适合能直接打开文档的 agent。
-- `read_file({path:"doc.pdf", pdf_format:"text"})` 在附属机器上提取文字后返回，可以用 `offset` 和 `limit` 分段。
+用 `read_file({path:"doc.pdf", pdf_format:"text"})` 在附属机器提取文字，`offset` 和 `limit` 是从 1 开始的整数。
 
 提取文字优先用 `PATH` 里的 `pdftotext`，没有就用 Python 的 `pypdf`。可以用环境变量 `HANDS_PDFTOTEXT` 或 `HANDS_PDF_PYTHON` 指定程序位置，生成器的 `--pdf-python` 会把后者写进启动命令。两者都没有时会报出安装说明，不会自动安装。扫描件没有文字层，会提示需要 OCR，本项目没有做 OCR。
 
@@ -188,4 +187,3 @@ node --test --test-skip-pattern="Windows real broker|interactive logon task"
 - 多显示器和不同缩放比例混用。
 - 配置生成器在 macOS 上的运行。
 - OpenCode 的真实模型端到端操作。
-- macOS 和 Linux 上的桌面控制还没有实现。

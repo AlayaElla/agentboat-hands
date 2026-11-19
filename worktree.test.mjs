@@ -34,7 +34,6 @@ test('two simultaneous hands instances edit the same file in separate worktrees;
     assert.deepEqual(results.map(r => r.text), ['agent-a', 'agent-b'])
     assert.equal(fs.readFileSync(path.join(repo, 'shared.txt'), 'utf8'), 'original\n')
     assert.equal((await first.call('read_file', { path: path.join(b, 'shared.txt') })).isError, true)
-    console.log(`SIMULTANEOUS pid=${first.child.pid} root=${a} shared.txt=${results[0].text}; pid=${second.child.pid} root=${b} shared.txt=${results[1].text}; main=original; cross-root=denied`)
     assert.throws(() => worktree('remove', { repo, directory: a }))
     assert.throws(() => worktree('remove', { repo, directory: repo }), /main checkout/)
     assert.throws(() => worktree('create', { repo, directory: a, branch: 'test/other' }), /already exists/)
